@@ -31,6 +31,26 @@ app.get('/api/candles', async (req, res) => {
     }
 });
 
+// Proxy endpoint for full asset pairs list
+app.get('/api/products', async (req, res) => {
+    try {
+        const targetUrl = 'https://api.exchange.coinbase.com/products';
+        
+        const response = await axios.get(targetUrl, {
+            headers: { 'User-Agent': 'PaperTradingProxy/1.0' }
+        });
+
+        // Relay the complete raw product array back to your Next.js sidebar
+        res.json(response.data);
+    } catch (error) {
+        console.error('Error fetching market products:', error.message);
+        res.status(error.response?.status || 500).json({
+            error: 'Failed fetching markets from Coinbase',
+            details: error.message
+        });
+    }
+});
+
 // 1. Wrap the Express app inside a standard HTTP server
 const server = createServer(app);
 
