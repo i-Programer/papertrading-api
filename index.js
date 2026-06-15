@@ -573,6 +573,142 @@ function removeSubscriptions(streams) {
     }
 }
 
+
+// Add at the top with other imports
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+// Initialize Gemini (FREE tier - 60 requests/minute)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+// ============ AI TRADING SIGNAL ENDPOINT ============
+app.post('/api/ai/signal', async (req, res) => {
+  try {
+    const { symbol, currentPrice, indicators, candles, positions } = req.body;
+    
+    // Prepare chart data for AI analysis (last 20 candles)
+    const recentCandles = candles.slice(-20);
+    const priceAction = recentCandles.map(c => ({
+      time: new Date(c.time * 1000).toLocaleTimeString(),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      volume: c.volume
+    }));
+    
+    // Build prompt for Gemini
+    const prompt = `
+You are a professional crypto trading analyst. Analyze the following data and provide a trading recommendation.
+
+SYMBOL: ${symbol}
+CURRENT PRICE: $${currentPrice}
+USER'S POSITION: ${positions.length > 0 ? `Holding ${positions[0].quantity} at $${positions[0].entryPrice}` : 'No active position'}
+INDICATORS:
+- RSI (14): ${indicators.rsi || 'N/A'}
+- MACD: ${indicators.macd || 'N/A'}
+- Volume Change: ${indicators.volumeChange || 'N/A'}%
+
+RECENT PRICE ACTION (last 20 candles):
+${JSON.stringify(priceAction, null, 2)}
+
+Respond with ONLY valid JSON in this exact format:
+{
+  "action": "BUY" or "SELL" or "HOLD",
+  "confidence": number between 0-100,
+  "takeProfit": number or null,
+  "stopLoss": number or null,
+  "reasoning": "brief explanation",
+  "riskLevel": "LOW" or "MEDIUM" or "HIGH"
+}
+
+Base your analysis on technical patterns, support/resistance, and risk management.
+    `;
+    
+    // Call Gemini API
+    const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite" });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    // Parse JSON response (handle potential markdown wrapping)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    const signal = JSON.parse(jsonMatch ? jsonMatch[0] : text);
+    
+    res.json({ success: true, signal });
+    
+  } catch (error) {
+    console.error('AI Signal error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ AI CHAT ASSISTANT ENDPOINT ============
+app.post('/api/ai/chat', async (req, res) => {
+  try {
+    const { message, portfolio, positions, tradeHistory } = req.body;
+    
+    const prompt = `
+You are a friendly crypto trading assistant for a paper trading app. User has:
+
+PORTFOLIO:
+- Cash: $${portfolio.cash}
+- Equity: $${portfolio.equity}
+- Active Positions: ${positions.length}
+- Total P&L: $${portfolio.dayPnl}
+
+Recent trades: ${tradeHistory.slice(0, 5).map(t => `${t.side} ${t.quantity} at $${t.price}`).join(', ')}
+
+User asks: "${message}"
+
+Respond helpfully, conversationally, and concisely (max 2-3 sentences). Give practical trading advice but remind them this is paper trading.
+    `;
+    
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    
+    res.json({ success: true, reply: response.text() });
+    
+  } catch (error) {
+    console.error('AI Chat error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ PATTERN RECOGNITION (Local, no API) ============
+app.post('/api/ai/patterns', async (req, res) => {
+  try {
+    const { candles } = req.body;
+    
+    const patterns = [];
+    const lastCandle = candles[candles.length - 1];
+    const prevCandle = candles[candles.length - 2];
+    
+    // Detect Doji (indecision)
+    const bodySize = Math.abs(lastCandle.close - lastCandle.open);
+    const totalRange = lastCandle.high - lastCandle.low;
+    if (bodySize / totalRange < 0.1) {
+      patterns.push({ name: "DOJI", meaning: "Market indecision, potential reversal", strength: "MEDIUM" });
+    }
+    
+    // Detect Hammer (bullish reversal)
+    const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+    if (lowerWick > bodySize * 2 && lastCandle.close > lastCandle.open) {
+      patterns.push({ name: "HAMMER", meaning: "Bullish reversal signal", strength: "HIGH" });
+    }
+    
+    // Detect Engulfing
+    if (prevCandle && lastCandle.close > prevCandle.open && lastCandle.open < prevCandle.close) {
+      patterns.push({ name: "BULLISH_ENGULFING", meaning: "Strong bullish reversal", strength: "HIGH" });
+    }
+    
+    res.json({ success: true, patterns });
+    
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 wss.on('connection', (wsToFrontend) => {
     clientConnectionCount++;
     console.log(`Frontend client connected (Total clients: ${clientConnectionCount})`);
